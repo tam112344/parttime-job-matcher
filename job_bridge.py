@@ -118,9 +118,17 @@ def _profile_dir():
     return d
 
 
+LAST_RENDER_ERR = ''
+
+
 def render(url, wait_ms=5000):
-    """用本机 Chrome 渲染页面，返回渲染后的完整 HTML。失败返回空串。"""
+    """用本机 Chrome 渲染页面，返回渲染后的完整 HTML。失败返回空串，
+    原因写进 LAST_RENDER_ERR —— 调用方要能把「为什么是空」说出来，
+    否则页面上一片绿灯、结果全是 0，用户只会以为这个站是假的。"""
+    global LAST_RENDER_ERR
+    LAST_RENDER_ERR = ''
     if not CHROME:
+        LAST_RENDER_ERR = '没找到 Chrome/Edge'
         return ''
     args = [CHROME, '--headless=new', '--disable-gpu', '--no-sandbox',
             '--disable-dev-shm-usage', '--mute-audio',
@@ -130,10 +138,18 @@ def render(url, wait_ms=5000):
             '--virtual-time-budget=%d' % wait_ms,
             '--dump-dom', url]
     try:
-        p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=TIMEOUT_RENDER)
-        return p.stdout.decode('utf-8', 'ignore')
-    except Exception:
+        out = p.stdout.decode('utf-8', 'ignore')
+        if not out.strip():
+            err = p.stderr.decode('utf-8', 'ignore').strip()
+            LAST_RENDER_ERR = (err.splitlines()[-1][:150] if err else 'Chrome 无输出')
+        return out
+    except subprocess.TimeoutExpired:
+        LAST_RENDER_ERR = 'Chrome 渲染超时（%ds）' % TIMEOUT_RENDER
+        return ''
+    except Exception as e:
+        LAST_RENDER_ERR = str(e)[:150]
         return ''
 
 
@@ -191,7 +207,12 @@ def src_58(q, city, limit):
     city = re.sub(r'市$', '', (city or '').strip())
     sub = CITY_58.get(city, '')
     if not sub:
-        sub = 'hz'
+        # 不要偷偷回落到杭州：那会把外地岗位混进「用户所在城市」的结果里，
+        # 比返回空更难发现。没填城市就安静返回空，填了但不认识就直说。
+        if not city:
+            return []
+        raise RuntimeError('58 未收录「%s」，换成大城市名再试（表里共 %d 个）'
+                           % (city, len(CITY_58)))
 
     # q 可以是多个词（页面端会带上扩展词），第一个做主搜索，全部做命中判断
     words = [w for w in re.split(r'[\s,、/｜|]+', q or '') if len(w) >= 2]
@@ -200,11 +221,13 @@ def src_58(q, city, limit):
     if main:
         urls.append('https://m.58.com/%s/jianzhi/?key=%s' % (sub, urllib.parse.quote(main)))
     urls.append('https://m.58.com/%s/jianzhi/' % sub)
-    out, seen = [], set()
+    out, seen, rendered, why = [], set(), 0, ''
     for u in urls:
         h = render(u, 5500)
         if not h:
+            why = LAST_RENDER_ERR
             continue
+        rendered += 1
         for m in re.finditer(r'<li[^>]*infoid="(\d+)"[^>]*>([\s\S]{20,4000}?)</li>', h):
             infoid, body = m.group(1), m.group(2)
             if infoid in seen:
@@ -255,10 +278,19 @@ def src_58(q, city, limit):
         if len(out) >= limit * 3:
             break
 
-    # 有关键词时只保留命中的 —— 宁可少而准，也不要拿一堆保安/服务员凑数
+    # 一页都没渲染出来：必须报错。静默返回空，用户只会以为这个站是假的。
+    if not rendered:
+        raise RuntimeError('58 页面渲染失败：' + (why or '未知原因'))
+
+    # 58 的岗位标题几乎全是营销话术（「10点上班，包食宿。一天280起」「年前短期388天无人管配车」），
+    # 极少出现「服务员」「收银员」这类标准词。用关键词硬筛会把整页清零 ——
+    # 那正是「58 从来没搜出过东西」的真实原因。
+    # 所以改成：命中的排前面，未命中的按限额保留，交给模型去判断相关性，
+    # 不让一条正则替用户决定这条岗位该不该被看见。
     if words:
         hit = [x for x in out if x['_hit'] > 0]
-        out = hit if hit else []
+        rest = [x for x in out if x['_hit'] == 0]
+        out = hit + rest[:max(2, limit // 2)]
     out.sort(key=lambda x: -x['_hit'])
     for x in out:
         x.pop('_hit', None)
