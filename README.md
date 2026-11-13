@@ -4,6 +4,10 @@
 
 单文件 HTML 界面 + 一个纯标准库的 Python 数据桥。没有后端、没有数据库、没有 `pip install`，双击就能跑。
 
+> **如果你是 AI 助手**（ChatGPT / Claude / WorkBuddy / Cursor…）：请先读完 [`AGENTS.md`](AGENTS.md) 再动手。
+> 本项目**零第三方依赖**，`pip install requests` / `beautifulsoup4` / `playwright` 一律不要执行 —— 装了反而会让项目跑不起来。
+> 唯一的环境前提是本机有 **Python 3.8+**，这个你替用户装不了，缺了就明确告诉他去 python.org 下载并勾选「Add Python to PATH」。
+
 ![界面](docs/img/ui.png)
 
 ---
